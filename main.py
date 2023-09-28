@@ -1,0 +1,217 @@
+# This is a sample Python script.
+
+# Press Shift+F10 to execute it or replace it with your code.
+# Press Double Shift to search everywhere for classes, files, tool windows, actions, and settings.
+import pandas as pd
+import numpy as np
+from itertools import combinations
+import csv
+
+def coocc(binaryfilein, freqs):
+    # ##dictionaries live here
+    # pred = "C:\\Users\\Grace\\Documents\\Predictions_external.csv"
+    # predictiondf=pd.read_csv(pred)
+    # samps=predictiondf.columns.values.tolist()
+    # samps.remove("Comp")
+    # samps.remove("ps")
+    #
+    # dfofPRS = pd.DataFrame(samps, columns=["Sample"])
+    # dfofPRS = dfofPRS.dropna()
+
+
+    ##Binary input with pres/abs of Kmers
+    binarydf=pd.read_csv(binaryfilein, sep="\t")
+    ##get list of samples
+    allsamples=binarydf.columns.values.tolist()
+    allsamples.remove("Comp")
+    allsamples.remove("ps")
+    ##outDF
+    dfofPRS=pd.DataFrame(allsamples, columns=["Sample"])
+    dfofPRS = dfofPRS.dropna()
+    # make a df of all the frequencies/pvalues/estimatedeffects/etc from file 2
+    dfoffreqs=pd.read_csv(freqs, sep= ",")
+    ##Make a df of all of the pvalues
+    # onlyPvals=dfoffreqs["node", "comp", "Significant?","Pval", "PA", "EstEffect"]
+    Ppoint05=dfoffreqs.loc[dfoffreqs["Pval"]<= 0.05]
+    Ppoint1=dfoffreqs.loc[dfoffreqs["Pval"]<= 0.1]
+    Ppoint01=dfoffreqs.loc[dfoffreqs["Pval"] <= 0.01]
+    Pallsig=dfoffreqs.loc[dfoffreqs["Significant?"] == "Yes"]
+    onlyest=dfoffreqs[["node", "EstEffect"]]
+    onlyfreqs=dfoffreqs[["node", "PA"]]
+    freqs=list(zip(onlyfreqs.node, onlyfreqs.PA))
+    DictofFreqs=dict(freqs)
+    est=list(zip(onlyest.node, onlyest.EstEffect))
+    DictofEst = dict(est)
+    listofkmersuminmodel=["sum"]
+    point1= MakebinarydfofPthreshold(binarydf, Ppoint1)
+    dfofPRS["0.1_0.5"]=calculatePRSforadf(Ppoint1, dfofPRS, point1, allsamples, DictofEst, DictofFreqs, 0.5, listofkmersuminmodel)
+    print( "done with P.1 and r2 .5")
+    dfofPRS["0.1_0.25"]=calculatePRSforadf(Ppoint1, dfofPRS, point1, allsamples, DictofEst, DictofFreqs, 0.25, listofkmersuminmodel)
+    print("done with p 0.1 and r2 0.25")
+    dfofPRS["0.1_0.1"]=calculatePRSforadf(Ppoint1, dfofPRS, point1, allsamples, DictofEst, DictofFreqs, 0.1, listofkmersuminmodel)
+    print("done with p=.1")
+
+    point05= MakebinarydfofPthreshold(binarydf, Ppoint05)
+    dfofPRS["0.05_0.5"]=calculatePRSforadf(Ppoint05, dfofPRS, point05, allsamples, DictofEst, DictofFreqs, 0.5, listofkmersuminmodel)
+    dfofPRS["0.05_0.25"]=calculatePRSforadf(Ppoint05, dfofPRS, point05, allsamples, DictofEst, DictofFreqs, 0.25, listofkmersuminmodel)
+    dfofPRS["0.05_0.1"]=calculatePRSforadf(Ppoint05, dfofPRS, point05, allsamples, DictofEst, DictofFreqs, 0.1, listofkmersuminmodel)
+    print("done with p = .05")
+
+    point01 = MakebinarydfofPthreshold(binarydf, Ppoint01)
+    dfofPRS["0.01_0.5"]=calculatePRSforadf(Ppoint01, dfofPRS, point01, allsamples, DictofEst, DictofFreqs, 0.5, listofkmersuminmodel)
+    dfofPRS["0.01_0.25"]=calculatePRSforadf(Ppoint01, dfofPRS, point01, allsamples, DictofEst, DictofFreqs, 0.25, listofkmersuminmodel)
+    dfofPRS["0.01_0.1"]=calculatePRSforadf(Ppoint01, dfofPRS, point01, allsamples, DictofEst, DictofFreqs, 0.1, listofkmersuminmodel)
+    print ("done with p = 0.01")
+
+    Psig= MakebinarydfofPthreshold(binarydf, Pallsig)
+    dfofPRS["sig_0.5"]=calculatePRSforadf(Psig, dfofPRS, Psig, allsamples, DictofEst, DictofFreqs, 0.5, listofkmersuminmodel)
+    dfofPRS["sig_0.25"]=calculatePRSforadf(Psig, dfofPRS, Psig, allsamples, DictofEst, DictofFreqs, 0.25, listofkmersuminmodel)
+    dfofPRS["sig_0.1"]=calculatePRSforadf(Psig, dfofPRS, Psig, allsamples, DictofEst, DictofFreqs, 0.1, listofkmersuminmodel)
+    print(" done with all significant p")
+
+    dfofPRS.loc[len(dfofPRS)] = listofkmersuminmodel
+    print(dfofPRS)
+
+    dfofPRS.to_csv("C:\\Users\\Grace\\Documents\\PRS_ALL.tsv", sep="\t")
+def MakebinarydfofPthreshold(binaryfile, Pthresholddf):
+    listofnodes=Pthresholddf["node"].tolist()
+    newbinaryfile=binaryfile[binaryfile["ps"].isin(listofnodes)]
+    return newbinaryfile
+
+
+def calculatePRSforadf (dftocalcon, outputdf, binarydf, allsamples, dictofest, Dictoffreqs, r2, kmersum):
+    # pred = "C:\\Users\\Grace\\Documents\\Predictions_external.csv"
+    Dictofdfs = {}
+    Dictofplusminus = {}
+    Dictofminusplus = {}
+    Dictofminusminus = {}
+    Dictofplusplus = {}
+
+    ##make a dataframe for each comp
+    ##list of the components each kmer belongs to
+    listofcomps=binarydf["Comp"].tolist()
+    listofcomps=list(set(listofcomps))
+    for i in range(len(listofcomps)):
+        currentcomp=listofcomps[i]
+        currentcompdf=binarydf.loc[binarydf["Comp"] == currentcomp]
+        Dictofdfs[currentcomp]=currentcompdf
+        # print(Dictofdfs)
+
+    #Getting frequencies of all the combinations of kmers for a comp
+    for comp in Dictofdfs:
+        currentdf=Dictofdfs[comp]
+        listofps=currentdf["ps"].tolist()
+        currentdf=currentdf.iloc[:, 2: ]
+
+        rowscount=len(currentdf.index)
+        if rowscount >1:
+            currentdf = currentdf.set_axis(listofps)
+            currentdf=currentdf.T
+            Transpose=currentdf
+            pairwise_combinations = list(combinations(Transpose.columns, 2))
+            for j in pairwise_combinations:
+                data = Transpose.loc[:, j]
+                columnheads=list(data.columns.values)
+                head1=columnheads[0]
+                head2=columnheads[1]
+                combo=str(head1) + "/" + str(head2)
+                Dictofminusminus[combo]=0
+                Dictofminusplus[combo]=0
+                Dictofplusminus[combo]=0
+                Dictofplusplus[combo]=0
+                for k in zip(Transpose[head1], Transpose[head2]):
+                    if k == (1,0):
+                        Dictofplusminus[combo] +=1
+                    if k == (0,1):
+                        Dictofminusplus[combo]+=1
+                    if k== (0,0):
+                        Dictofminusminus[combo] +=1
+                    if k == (1,1):
+                        Dictofplusplus[combo] +=1
+        else:
+            pass
+
+    ##Make frequencies of all of the kmer combos
+    Dictofcombofreq={}
+    binarydf=binarydf.drop("Comp", axis=1)
+    for i in Dictofplusplus:
+        keys=list(Dictofplusplus.keys())
+        plusplus = float(Dictofplusplus[i] / (len(allsamples)))
+        minusminus = float(Dictofminusminus[i] / (len(allsamples)))
+        plusminus = float(Dictofplusminus[i] / (len(allsamples)))
+        minusplus = float(Dictofminusplus[i] / (len(allsamples)))
+        listoffreqs=[plusplus, minusminus, plusminus, minusplus]
+        Dictofcombofreq[i]= listoffreqs
+
+    ##calculate D and r2
+    DictofR2={}
+    for j in range(len(Dictofplusplus)):
+        keys=list(Dictofplusplus.keys())
+        currentkey=keys[j]
+        node1=currentkey.split("/")[0]
+        node2=currentkey.split("/")[1]
+        currentvalue=Dictofcombofreq[currentkey]
+        D = (currentvalue[0]*currentvalue[1]) - (currentvalue[2]*currentvalue[3])
+        D2=D*D
+
+        PA=Dictoffreqs[int(node1)]
+        Pa=1-PA
+        PB=Dictoffreqs[int(node2)]
+        Pb=1-PB
+        DictofR2[currentkey] = D2 / (PA*PB*Pa*Pb)
+
+    for key in DictofR2:
+        node1=key.split("/")[0]
+        node2=key.split("/")[1]
+        R2=DictofR2[key]
+        if DictofR2[key] <= r2:
+            pass
+        else:
+            node1est=dictofest[int(node1)]
+            node2est=dictofest[int(node2)]
+            node1estabs=abs(node1est)
+            node2estabs=abs(node2est)
+            if node1estabs > node2estabs:
+                try:
+                    binarydf = binarydf[binarydf["ps"]!= int(node2)]
+                except:
+                    pass
+            elif node2estabs > node1estabs:
+                try:
+                    binarydf = binarydf[binarydf["ps"] != int(node1)]
+                except:
+                    pass
+    remainingnodes=binarydf["ps"].tolist()
+    indexofnodes=binarydf.index.values.tolist()
+
+    listofest = []
+    for nodes in remainingnodes:
+        listofest.append(dictofest[nodes])
+    results = "results " + str(r2)
+    series=pd.Series(listofest, index=indexofnodes)
+    #To make model first time
+    kmersum=kmersum.append(str(len(series)))
+    binarydf=binarydf.drop("ps", axis=1)
+    multiplieddf=binarydf.mul(series, axis=0)
+    dfsum=list(multiplieddf.sum(axis=0))
+    return dfsum
+
+    #For Prediction
+    # preddf=pd.read_csv(pred, sep=",")
+    # mask= preddf["ps"].isin(remainingnodes)
+    # preddf=preddf[mask]
+    # preddf=preddf.drop("ps", axis=1)
+    # preddf=preddf.drop("Comp", axis=1)
+    # multiplieddf=preddf.mul(series, axis=0)
+    # dfsum=list(multiplieddf.sum(axis=0))
+    # print(dfsum)
+    # return dfsum
+
+
+
+
+if __name__ == '__main__':
+    coocc('C:\\Users\\Grace\\Downloads\\Allsigkmers.tsv', 'C:\\Users\\Grace\\Documents\\GWASotherinfo.csv')
+    # coocc('C:\\Users\\Grace\\Desktop\\Predictions.csv', 'C:\\Users\\Grace\\Documents\\90GWASotherdata.csv')
+    # prediction('C:\\Users\\Grace\\Desktop\\Predictions.csv', 'C:\\Users\\Grace\\Documents\\90GWASotherdata.csv')
+# See PyCharm help at https://www.jetbrains.com/help/pycharm/
