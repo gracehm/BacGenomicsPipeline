@@ -11,66 +11,59 @@ from datetime import datetime
 from Bio import SeqIO
 
 
-Location="/home/gracemorales/SW_files.csv"
-log="/home/gracemorales/Pipelinelog.txt"
-testlocations="/home/gracemorales/testlocations.csv"
+#pipeline code to systematically trim, QC, and assemble Illumina short read sequencing data for a list of samples
+#This code takes in a CSV containing columns labeled "Samples", "Read1", "Read2", "Size1", "Length", "Size2", "Length2",
+#"Totalsize", "Coverage", "Trimmed1", "Trimmed2".
+
 
 #root dir is the 2nd argument when calling, so in this case it is /home/gracemorales/
 
-def logger(outfile):
+def logger(outfile): #create the logfile
     log=logging.basicConfig(filename=outfile,
                             format = '%(asctime)s %(message)s',
 
                             level=logging.INFO)
     return(log)
-def mainpipeline(Locations, logfile, rootdir):
+def mainpipeline(Locations, logfile, rootdir): #Locations is the input CSV file, logfile is the path to the log, and rootdir
+
     dt=datetime.now()
     currentdt=dt.strftime("%d/%m/%Y %H:%M:%S")
     logging.basicConfig(filename=logfile, filemode='w', level=logging.DEBUG)
     logging.info(currentdt)
     logging.info("Starting Analysis")
-    print(Locations)
+
+    #create the large dataframe from the input file
     Maindf=pd.read_csv(Locations, sep=",", usecols=["Samples", "Read1", "Read2", "Size1",
                                 "Length","Size2","Length2","Totalsize","Coverage","Trimmed1","Trimmed2"])
+    #turn the df into a dictionary where the sample name is the key and the values are a list of the different features
     SampDict=Maindf.set_index(["Samples"]).T.to_dict('list')
-    print(SampDict)
-    #FastQC(SampDict, currentdt, rootdir)
-    #printdata(SampDict, rootdir)
-    # CleanReads(SampDict, currentdt, rootdir)
-    # printdata(SampDict, rootdir)
-    # TrimReads(SampDict, currentdt, rootdir)
-    # printdata(SampDict, rootdir)
-    # # Confindr(SampDict, currentdt, rootdir)
+
+    #Call the fastqc method to QC the reads
+    FastQC(SampDict, currentdt, rootdir)
+    printdata(SampDict, rootdir) #This method is called to continually update the dataframe with information produced by each method.
+    #QC the reads some more
+    CleanReads(SampDict, currentdt, rootdir)
+    printdata(SampDict, rootdir)
+    #Use TrimGalore to trim the good reads
+    TrimReads(SampDict, currentdt, rootdir)
+    printdata(SampDict, rootdir)
+    #call SPAdes to do a de novo asssembly with the trimmed reads
     Assembly(SampDict, currentdt, rootdir)
     printdata(SampDict, rootdir)
-    # dictdf=pd.read_csv("~/GFF_bakta.csv", sep=",", usecols=["Sample", "Path"] )
-    # # print(dictdf)
-    # newdict=dictdf.set_index(["Sample"]).T.to_dict('list')
-    # print(newdict)
-    # ReadBaktaTxt(newdict, currentdt, rootdir)
-    # QCAssembly(newdict, currentdt, rootdir)
-    # printdata(newdict, rootdir)
-    Annotate(SampDict, currentdt, rootdir)
-    # ChangeGFF(newdict)
+
+    print("starting QC of assemblies")
+    #QC assemblies and rename the contigs to be >Samplename_Contig#
+    QCAssembly(Sampdict, currentdt, rootdir)
+    printdata(Sampdict, rootdir)
+    #Run Bakta on the Assemblies to predict proteins
+    Annotate(Sampdict, currentdt, rootdir)
     printdata(SampDict, rootdir)
+    print("Finished processing samples!")
 def printdata(SampDict, rootdir):
     finaldf=pd.DataFrame.from_dict(SampDict)
     finaldf=finaldf.transpose()
-    finaldf.to_csv("{0}PipelineOutputSW.tsv".format(rootdir), sep="\t")
+    finaldf.to_csv("{0}PipelineOutput.tsv".format(rootdir), sep="\t")
     return finaldf
-def ListallFiles(dir):
-
-    filelist = glob.glob(dir + '*')
-    print(filelist)
-    files=[]
-    for i in range(len(filelist)):
-
-        file=filelist[i].strip(".fna")
-        file=file.strip("/home/gracemorales/TestData/")
-        files.append(file)
-    filewrite=open("/home/gracemorales/testset.txt", "a")
-    for i in range(len(files)):
-        filewrite.write(files[i]+"\t"+filelist[i]+"\n")
 
 def FastQC(Dict, currentdt, rootdir):
     #run FastQC for QC
@@ -84,23 +77,26 @@ def FastQC(Dict, currentdt, rootdir):
         key=keys[i]
         value=Dict[key]
 
-
         read1=(value[0])
         read2=(value[1])
         reads.append(read1)
         reads.append(read2)
+
     #actually run the program
     for a in range(len(reads)):
+        #try and exception blocks will try to do a task, but if an error is encountered, will trigger the except block.
+        #Most of this code will try to QC/trim/assemble/etc, but if is unable to do due to corrupted files, too short, sample
+        #being removed, etc, then it will skip that sample and move on to the next one.
         try:
             samplename = reads[a].strip(".fastq.gz")
             print("Running" + samplename)
             subprocess.run(["conda run -n fastqc fastqc {0}".format(reads[a])], shell=True) #include shell=True for subprocess.run
+            #I don't know why shell=True is needed but it works when it is included.
             print("Finished")
         except Exception as e:
             logging.warning("Error running FASTQC on {0}".format(key))
             logging.warning(e)
             continue
-    # CleanReads(reads, Dict, currentdt, rootdir)
 
 def CleanReads(Dict, currentdt, rootdir):
     #define the names of the samples and unzip folders
@@ -117,7 +113,7 @@ def CleanReads(Dict, currentdt, rootdir):
         readslist.append(read2)
     for i in range(len(readslist)):
         samplename = readslist[i].strip(".fastq.gz")
-        try:
+        try: #unzip the files
             shutil.unpack_archive('{0}_fastqc.zip'.format(samplename), '{0}_fastqc'.format(samplename))
         except Exception as e:
             logging.warning("Could not unzip {0}".format(samplename))
@@ -149,14 +145,15 @@ def CleanReads(Dict, currentdt, rootdir):
             extrasummary=open("{0}_fastqc/{1}_fastqc/fastqc_data.txt".format(samplename,justsamp), "r")
 
             head = [next(extrasummary) for x in range(9)]
+            #This block extracts key features from the summary document
             for j in range(9):
-                if j==1 and re.search("fail", head[j]):
+                if j==1 and re.search("fail", head[j]): #is this file okay to use? Log this.
                     logging.warning(head[j]+ "\t"+readslist[a] + "\t CHECK STATUS,  Questionable QC_extrasummary")
 
-                if re.search("Total Sequences", head[j]):
+                if re.search("Total Sequences", head[j]): #Get the total number of reads, this will be used to calculate coverage
                     readsnum=head[j].strip("Total Sequences")
                     Dict[justsamp.split("_")[0]].append(int(readsnum))
-                if re.search("Sequence length", head[j]):
+                if re.search("Sequence length", head[j]): #get the length
                     length=head[j].strip("Sequence length")
                     if re.search("-", head[j]):
                         length=length.split("-")[1]
@@ -177,32 +174,32 @@ def CleanReads(Dict, currentdt, rootdir):
             Readslen1=Dict[key][2]
             Readslen2=Dict[key][4]
             print(key+ "\t" + str(Readslen1) + "\t" + str(Readslen2))
-            totallen=Readslen1+Readslen2
+            totallen=Readslen1+Readslen2 #calculate the number of reads
             fullseq=totallen*(Dict[key][3])
-            cov=fullseq/5000000 #change 5000000 for whatever avg genome size is
+            cov=fullseq/5000000 #change 5000000 for whatever avg genome size is, this calculates the coerage
             Dict[key].append(totallen)
             Dict[key].append(cov)
-            if 10 < cov < 30:
+            if 10 < cov < 30: #give warning that the coverage is a bit low but still useable!
                 logging.warning(justsamp + "\tCoverage warning\t" + str(cov) + "x")
-            if cov < 10:
+            if cov < 10: #Coverage below 10 is unusable for us.
                 logging.warning(justsamp+ "\tCoverage TOO LOW.")
                 print("Removing\t" + key + "\tfrom dictionary")
-                Dict.pop(key)
+                Dict.pop(key) #remove the sample if the coverage is too low
         except Exception as e:
             logging.warning("Error with FASTQC analysis for {0}".format(key))
             logging.warning(e)
             Dict[key].append(0)
             Dict[key].append(0)
             continue
-
+    #moving files around to clean up the workspace
     os.system("mv {0}_fastqc/{1}_fastqc/fastqc_data.txt {2}PairedReads/QC/{1}_fastqc_data.txt".format(samplename,  justsamp, rootdir,))
     os.system("mv {0}_fastqc/{1}_fastqc/summary.txt {2}PairedReads/QC/{1}_fastqc_summary.txt".format(samplename, justsamp, rootdir))
 
     logging.info("Removing Files")
-    os.system("cd {0}SWReads/".format(rootdir))
-    # os.system("rm -r {0}PairedReads/*_fastqc.zip".format(rootdir))
-    os.system("rm -r {0}SWReads/*.html". format(rootdir))
-    os.system("rm -r {0}SWReads/{1}_fastqc".format(rootdir, justsamp))
+    os.system("cd {0}/".format(rootdir))
+    os.system("rm -r {0}PairedReads/*_fastqc.zip".format(rootdir))
+    os.system("rm -r {0}/*.html". format(rootdir))
+
     print("Finished QC!")
 def TrimReads(Dict, currentdt, rootdir):
     keys = list(Dict.keys())
@@ -210,19 +207,20 @@ def TrimReads(Dict, currentdt, rootdir):
     # get the samples and read files
     logging.info("Trimming Reads" + currentdt)
     print("trimming reads")
-    os.system("mkdir {0}/SWReads/QC/".format(rootdir))
+    os.system("mkdir {0}/PairedReads/QC/".format(rootdir))
     for i in range(len(keys)):
         key = keys[i]
         try:
             value = Dict[key]
             read1 = (value[0])
             read2 = (value[1])
-            subprocess.run(["conda run -n trim trim_galore --paired -o /home/gracemorales/SWReads/Good/ {0} {1}".format(read1, read2)], shell=True)
-            readname1=read1.strip("{0}SWReads/".format(rootdir))
-            readname2=read2.strip("{0}SWReads/".format(rootdir))
-            Dict[key].append("{0}SWRead/Good/{1}_val_1.fq.gz".format(rootdir, readname1.strip(".fastq.gz")))
-            Dict[key].append("{0}SWReads/Good/{1}_val_2.fq.gz".format(rootdir, readname2.strip( ".fastq.gz")))
-            os.system("mv {0}SWReads/Good/*.txt {0}SWReads/QC/".format(rootdir))
+            #trim the good reads and sort them into the Good folder for use later.
+            subprocess.run(["conda run -n trim trim_galore --paired -o /home/gracemorales/PairedReads/Good/ {0} {1}".format(read1, read2)], shell=True)
+            readname1=read1.strip("{0}PairedReads/".format(rootdir))
+            readname2=read2.strip("{0}PairedReads/".format(rootdir))
+            Dict[key].append("{0}PairedReads/Good/{1}_val_1.fq.gz".format(rootdir, readname1.strip(".fastq.gz")))
+            Dict[key].append("{0}PairedReads/Good/{1}_val_2.fq.gz".format(rootdir, readname2.strip( ".fastq.gz")))
+            os.system("mv {0}PairedReads/Good/*.txt {0}QC/".format(rootdir))
         except Exception as e:
             logging.warning("Error Trimming {0}".format(key))
             logging.warning(e)
@@ -238,21 +236,21 @@ def Assembly(Dict, currentdt, rootdir):
     for i in range(len(keys)):
         try:
             key=keys[i]
-
             value=Dict[key]
-
             readname1=(value[0].split("/")[-1])
-            print(readname1)
+            print("spades "+readname1) #you'll notice a lot of print statements, this helps me anchor myself when I check how the code
+            #is running to see where it is at the present moment
             readname2 = (value[1].split("/")[-1])
-            print(readname2)
-            read1=("{0}SWReads/Good/{1}_val_1.fq.gz".format(rootdir, readname1.strip(".fastq.gz")))
-            read2=("{0}SWReads/Good/{1}_val_2.fq.gz".format(rootdir, readname2.strip(".fastq.gz")))
-
-            subprocess.run(["conda run -n spades spades.py -o {0}SWReads/Assembled/{1} -t 40 --isolate -1 {2} -2 {3}".format(rootdir, key, read1, read2)], shell=True)
-            os.system("mv {0}SWReads/Assembled/{1}/contigs.fasta {0}SWReads/Assembled/Contigs/{1}.fasta".format(rootdir, key))
-            os.system("mv {0}SWReads/Assembled/{1}/spades.log {0}SWReads/Assembled/Logs/{1}.log".format(rootdir, key))
-            os.system("mv {0}SWReads/Assembled/{1}/assembly_graph.fastg {0}SWReads/Assembled/fastg/{1}.fastg".format(rootdir, key))
-            Dict[key].append("{0}SWReads/Assembled/Contigs/{1}.fasta".format(rootdir, key))
+            print("spades "+readname2)
+            read1=("{0}PairedReads/Good/{1}_val_1.fq.gz".format(rootdir, readname1.strip(".fastq.gz")))
+            read2=("{0}PairedReads/Good/{1}_val_2.fq.gz".format(rootdir, readname2.strip(".fastq.gz")))
+            #run spades to assemble
+            subprocess.run(["conda run -n spades spades.py -o {0}Assembled/{1} -t 40 --isolate -1 {2} -2 {3}".format(rootdir, key, read1, read2)], shell=True)
+            #move files around to clean up space and free memory
+            os.system("mv {0}Assembled/{1}/contigs.fasta {0}Assembled/Contigs/{1}.fasta".format(rootdir, key))
+            os.system("mv {0}Assembled/{1}/spades.log {0}Assembled/Logs/{1}.log".format(rootdir, key))
+            os.system("mv {0}Assembled/{1}/assembly_graph.fastg {0}Assembled/fastg/{1}.fastg".format(rootdir, key))
+            Dict[key].append("{0}Assembled/Contigs/{1}.fasta".format(rootdir, key)) #continually appending to the dictionary values
 
         except Exception as e:
             logging.warning("Error assembling {0}".format(key))
@@ -260,6 +258,7 @@ def Assembly(Dict, currentdt, rootdir):
             Dict[key].append("Null")
             continue
     print("Finished assembly")
+
 def QCAssembly(Dict, currentdt, rootdir):
     logging.info(currentdt + "QC of Assembly started")
     keys = list(Dict.keys())
@@ -267,75 +266,44 @@ def QCAssembly(Dict, currentdt, rootdir):
     for i in range(len(keys)):
         try:
             key=keys[i]
-            # print(key)
+            print(key)
             value=Dict[key]
-            infile = value[10]
-            print(infile)
+            infile = value[18]
             records = list(SeqIO.parse(infile, "fasta"))
-            with open("{0}SWReads/Assembled/QC/{1}_QC.fasta".format(rootdir, key), "w") as f:
+            with open("{0}Assembled/QC/{1}_QC.fasta".format(rootdir, key), "w") as f:
                 print("writing out {0}".format(key))
                 for j in range(len(records)):
                     currentcontig=records[j]
-                    if len(currentcontig) >= 800:
+                    if len(currentcontig) >= 800: #Get rid of contigs shorter than 800bp and rename contig names
                         # print(str(j+1)+ "\t" + str(len(currentcontig)))
                         f.write(">"+key + "_Contig_"+str(j+1) + "\n")
                         f.write(str(currentcontig.seq) + "\n")
-            Dict[key].append("{0}SWReads/Assembled/QC/{1}_QC.fasta".format(rootdir, key))
+            Dict[key].append("{0}Assembled/QC/{1}_QC.fasta".format(rootdir, key))
         except Exception as e:
             logging.warning("Issue with Assembly QC")
             logging.warning(e)
             Dict[key].append("null")
             continue
-        # os.system("rm -r {0}PairedReads/Assembled/{1}/".format(rootdir, key))
+        os.system("rm -r {0}PairedReads/Assembled/{1}/".format(rootdir, key))
     print("Finished contig rename and length check")
-
-
-def Confindr(Dict, currentdt, rootdir): #OUT OF COMMISION FOR NOW
-    keys = list(Dict.keys())
-    logging.info(currentdt + "\t Checking for Contamination with Confindr")
-
-    for i in range(len(keys)):
-        key = keys[i]
-        if key=="VUTI412":
-            continue
-        value = Dict[key]
-        read1 = (value[0])
-        read2 = (value[1])
-
-        subprocess.run(["conda run -n confindr confindr.py -i {0}PairedReads/Good/ -o {0}PairedReads/Confindr -d Escherichia".format(rootdir)], shell=True)
-        # subprocess.run(["conda run -n confindr confindr.py -i {0}PairedReads/Good/ -o {0}PairedReads/Confindr -d Escherichia".format(rootdir, read2)], shell=True)
-    df=pd.read_csv("{0}PairedReads/Confindr/confindr_report.csv".format(rootdir), sep=',', usecols=["Sample", "NumContamSNVs", "ContamStatus"])
-
-    status= df.loc[df['ContamStatus'] == "True"]
-    status2 = df.loc[df['ContamStatus'] == "False"]
-    key2=status2["Sample"].tolist()
-    keys=status["Sample"].tolist()
-    logging.warning("Samples with contamination: " + str(status2))
-    print(key2)
-    for i in range(len(keys)):
-
-        Dict[keys[i]].pop()
-        print("Removing" + keys[i]+ "from Dictionary")
-    print("Finished Confindr")
 
 def Annotate (Dict, currentdt, rootdir):
     print("Starting Annotations")
-    logging.info(currentdt + "Annotation with prokka started")
-    # version=subprocess.run(["conda run -n prokka_env prokka --version"])
+    logging.info(currentdt + "Annotation with Bakta started")
     keys = list(Dict.keys())
 
     for i in range(len(keys)):
         try:
             key = keys[i]
             value = Dict[key]
-            contigs=value[10]
+            contigs=value[18]
             print(contigs)
+            #database is stored on the harddrive mounted to the desktop at /media/gracemorales/My Passport/bakta/db
             subprocess.run(["conda run -n bakta bakta --db '/media/gracemorales/My Passport/bakta/db' --verbose --output ~/Annotations/{0} --prefix {0} --threads 28 {1}".format(key, contigs)], shell=True)
-            # subprocess.run(["conda run -n prokka_env prokka --force --outdir ~/Annotations --prefix {0}prok --cpus 48 {1}".format(key, contigs)], shell=True)
             print("Finished " + key)
             with open("{0}Annotations/{1}.txt".format(rootdir, key), "r") as f:
-                head = [next(f) for x in range(20)]
-                for j in range(20):
+                head = [next(f) for x in range(20)] #get the information from the first 20 rows of the file
+                for j in range(20): #extract key features
                     if re.search("Length", head[j]):
                         size = head[j].strip("Length: ")
                         print(size)
@@ -350,7 +318,7 @@ def Annotate (Dict, currentdt, rootdir):
             logging.warning(e)
             Dict[key]="Null"
             Dict[key]="Null"
-
+        #move files around
         os.system("mv {0}Annotations/{1}/*.gff3 {0}GFF_2/".format(rootdir, key))
         os.system("mv {0}Annotations/{1}/*.tbl {0}Annotations/tbl/".format(rootdir,key))
         os.system("mv {0}Annotations/{1}/*.tsv {0}Annotations/tsv/".format(rootdir,key))
@@ -362,66 +330,8 @@ def Annotate (Dict, currentdt, rootdir):
         os.system("rm -r {0}Annotations/{1}/". format(rootdir,key))
 
     print("Finished Annotating")
-def ReadBaktaTxt(Dict, currentdt, rootdir):
-    keys = list(Dict.keys())
-    print("Reading Files")
 
-    for i in range(len(keys)):
-        try:
-            key = keys[i]
-            value = Dict[key]
-            print("{0}Annotations/Txt/{1}.txt".format(rootdir, key))
-            with open("{0}Annotations/Txt/{1}.txt".format(rootdir, key), "r") as f:
-                print("opened")
-                head = [next(f) for x in range(20)]
-                for j in range(20):
-                    if re.search("Length", head[j]):
-                        size = head[j].strip("Length: ")
-                        print(size)
-                        Dict[key].append(size)
-                        j += 1
-                    if re.search("CDSs", head[j]):
-                        cds = head[j].strip("CDSs: ")
-                        print(cds)
-                        Dict[key].append(cds)
-                        j+=1
-        except Exception as e:
-            logging.warning("Error Annotating {0}".format(key))
-            logging.warning(e)
-            Dict[key]="Null"
-            Dict[key]="Null"
-
-def ChangeGFF(Dict):
-    keys = list(Dict.keys())
-    print("starting gff change")
-    for i in range(len(keys)):
-        try:
-
-            key = keys[i]
-
-            print("changing " +key)
-            value = Dict[key]
-            GFFtochange=value[0]
-            subprocess.run(["conda run -n panaroo python ~/miniconda3/envs/panaroo/bin/convert_prodigal_to_gff3.py -i {0} -o /home/gracemorales/GFF/new/sample/{1}c.gff3" .format(GFFtochange, key)], shell=True)
-
-
-        except:
-            print ("error with " + key)
-            pass
-def parsefasta(filein, fileout):
-    fastadict=SeqIO.to_dict(SeqIO.parse(filein, "fasta"))
-    fastadict.pop("HG320")
-    fastadict.pop("HG306")
-    fastadict.pop("HG263")
-    fastadict.pop("HG271")
-    fastadict.pop("HG284")
-    listofkeys=list(fastadict.keys())
-    print(listofkeys)
-    with open(fileout, 'w') as handle:
-        SeqIO.write(fastadict.values(), handle, 'fasta')
 
 if __name__ == '__main__':
-    # ListallFiles("/home/gracemorales/TestData/")
-    mainpipeline(sys.argv[1], log, sys.argv[2]) #list then dir
-    # parsefasta("/home/gracemorales/copyofgoodpanaroo/core_gene_alignment.aln", "/home/gracemorales/copyofgoodpanaroo/removedcoregenealignment.aln")
-# See PyCharm help at https://www.jetbrains.com/help/pycharm/
+    mainpipeline(sys.argv[1], log, sys.argv[2]) #list of samples, logfile path, and root directory
+    # See PyCharm help at https://www.jetbrains.com/help/pycharm/
